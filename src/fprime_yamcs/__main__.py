@@ -199,6 +199,8 @@ def construct_temporary_configuration(config_directory: Path, instances: List[st
     xtce_dictionary, fprime_instance = xtce_mdb_location(yamcs_working_config_dir, instances)
 
     print(f"[INFO] Updating YAMCS XTCE dictionary from {dictionary} to {xtce_dictionary}")
+    # Ensure parent directory exists before running fprime-to-xtce
+    xtce_dictionary.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["fprime-to-xtce", "-o", str(xtce_dictionary), str(dictionary)], check=True)
 
     print("[INFO] Setting ports for YAMCS UDP processors")

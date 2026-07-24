@@ -41,7 +41,29 @@ services:
       downloadTimeoutMs: 8000
       uplinkChunkSize: ${FPRIME_UPLINK_CHUNK_SIZE:512}
       downlinkMirrorDir: ${FPRIME_DOWNLINK_DIR:/tmp/runner/fprime-downlink}
-      
+
+  # Bridge service: reformats CFDP packets from tm_realtime to cfdp_in
+  - class: com.example.myproject.CfdpBridgeService
+    args:
+      inStream: tm_realtime
+      outStream: cfdp_in
+      fileApid: 3
+
+  # CFDP Service for standard CFDP file transfers
+  - class: org.yamcs.cfdp.CfdpService
+    args:
+      incomingStream: cfdp_in
+      outgoingStream: cfdp_out
+      sequenceNrLength: 4
+      maxExistingFileRenames: 10
+      localEntities:
+        - name: "YAMCS-Ground"
+          id: 68
+          bucket: "cfdpDown"
+      remoteEntities:
+        - name: "F-Prime-Target"
+          id: 1
+
 dataLinks:
   - name: UDP_TM_IN
     class: org.yamcs.tctm.ccsds.UdpTmFrameLink
@@ -87,6 +109,26 @@ streamConfig:
     - name: "tm_realtime"
       processor: "realtime"
     - name: "tm_dump"
+    - name: "cfdp_in"
+      schema:
+        columns:
+          - name: "gentime"
+            type: "TIMESTAMP"
+          - name: "seqNum"
+            type: "INT"
+          - name: "rectime"
+            type: "TIMESTAMP"
+          - name: "pdu"
+            type: "BINARY"
+    - name: "cfdp_out"
+      schema:
+        columns:
+          - name: "gentime"
+            type: "TIMESTAMP"
+          - name: "seqNum"
+            type: "INT"
+          - name: "pdu"
+            type: "BINARY"
   cmdHist: ["cmdhist_realtime", "cmdhist_dump"]
   event: ["events_realtime", "events_dump"]
   param: ["pp_realtime", "pp_dump", "sys_param", "proc_param"]
