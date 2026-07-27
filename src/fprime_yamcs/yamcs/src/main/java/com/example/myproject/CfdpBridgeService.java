@@ -42,6 +42,7 @@ public class CfdpBridgeService extends AbstractYamcsService implements StreamSub
     private static final Logger LOG = LoggerFactory.getLogger(CfdpBridgeService.class);
 
     private static final int CCSDS_PRIMARY_HEADER_SIZE = 6;
+    private static final int FW_PACKET_DESCRIPTOR_SIZE = 2;
     private static final int DEFAULT_FILE_APID = 3;
 
     private String inStreamName;
@@ -137,8 +138,15 @@ public class CfdpBridgeService extends AbstractYamcsService implements StreamSub
             return;
         }
 
-        // Strip CCSDS primary header to get raw CFDP PDU
-        byte[] pdu = Arrays.copyOfRange(bytes, CCSDS_PRIMARY_HEADER_SIZE, expectedTotalLength);
+        // Strip CCSDS primary header and the F' packet descriptor to get raw CFDP PDU.
+        // CfdpManager writes a 2-byte FW_PACKET_FILE descriptor at the start of every
+        // outgoing PDU buffer, so the PDU itself begins after it.
+        int pduStart = CCSDS_PRIMARY_HEADER_SIZE + FW_PACKET_DESCRIPTOR_SIZE;
+        if (expectedTotalLength <= pduStart) {
+            LOG.warn("CFDP packet too short to contain a PDU. Length: {}", expectedTotalLength);
+            return;
+        }
+        byte[] pdu = Arrays.copyOfRange(bytes, pduStart, expectedTotalLength);
 
         // Extract sequence count for the tuple
         int seqCount = ((bytes[2] & 0xFF) << 8) | (bytes[3] & 0xFF);
