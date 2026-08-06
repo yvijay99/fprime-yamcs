@@ -68,5 +68,10 @@ include = ["fprime_yamcs"]
 fprime_yamcs = [
     "pox.xml",
     "src/main/yamcs/etc/*",
-    "src/main/java/*"
+    "src/main/java/*",
+    "yamcs/pom.xml",
+    "yamcs/src/main/yamcs/etc/*",
+    "yamcs/src/main/yamcs/mdb/*",
+    "yamcs/src/main/java/com/example/myproject/*",
+    "yamcs/src/main/resources/fprime-events-web/*",
 ]
