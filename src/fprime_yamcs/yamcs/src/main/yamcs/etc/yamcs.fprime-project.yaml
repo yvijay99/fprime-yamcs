@@ -25,44 +25,99 @@ services:
       command: ["fprime-yamcs-events"]
       restart: "always"
       logLevel: INFO
-  # Reassembles Fw::FilePacket downlinks (APID 3) into the fprimeFilesIn bucket.
-  
-  # Environment variables to set before starting YAMCS
-  # FPRIME_UPLINK_CHUNK_SIZE - Bytes per uplink data packet
-  # Set by: export FPRIME_UPLINK_CHUNK_SIZE=1024
-  # FPRIME_DOWNLINK_DIR - Directory to mirror downloaded files
-  # Set by: export FPRIME_DOWNLINK_DIR=/custom/downlink/path
-
-  - class: com.example.myproject.FprimeFilePacketService
-    args:
-      inStream: tm_realtime
-      bucket: fprimeFilesIn
-      fileApid: 3
-      downloadTimeoutMs: 8000
-      uplinkChunkSize: ${FPRIME_UPLINK_CHUNK_SIZE:512}
-      downlinkMirrorDir: ${FPRIME_DOWNLINK_DIR:/tmp/runner/fprime-downlink}
 
   # Bridge service: reformats CFDP packets from tm_realtime to cfdp_in
+  # This is needed because tm_realtime tuples have a "packet" column but
+  # CfdpService expects a "pdu" column
   - class: com.example.myproject.CfdpBridgeService
     args:
       inStream: tm_realtime
       outStream: cfdp_in
       fileApid: 3
 
-  # CFDP Service for standard CFDP file transfers
-  - class: org.yamcs.cfdp.CfdpService
+  # Uplink bridge: sends CFDP PDUs from cfdp_out to spacecraft via TC link
+  - class: com.example.myproject.CfdpUplinkBridge
     args:
-      incomingStream: cfdp_in
-      outgoingStream: cfdp_out
-      sequenceNrLength: 4
-      maxExistingFileRenames: 10
+      inStream: cfdp_out
+      uplinkLink: UDP_TC_OUT.vc1
+      fileApid: 3
+
+  # CFDP Service - F Prime CFDP file transfer
+  # Entity IDs from lib/fprime/Svc/Ccsds/CfdpManager/Parameters.fppi
+  # F´ LocalEid=42, FileInDefaultDestEntityId=100
+  # So YAMCS must be entity 100, F´ is entity 42
+  # FprimeCfdpService, not stock org.yamcs.cfdp.CfdpService: F´ doesn't support
+  # the CFDP Message-To-User TLVs that drive downlink-initiation and directory
+  # listing. This subclass sends CfdpManager.SendFile / FileManager.ListDirectory
+  # commands instead and collects the resulting F´ events.
+  - class: com.example.myproject.FprimeCfdpService
+    # Named for what it is. This slot once held
+    # com.example.myproject.FprimeFilePacketService (the Fw::FilePacket
+    # implementation); YAMCS's File Transfer UI shows the service name, so the
+    # old label made CFDP transfers look like FilePacket ones.
+    name: CfdpService
+    args:
+      # REQUIRED: CfdpService compares this against its own runtime class name
+      # to decide whether it is its own file-listing service. Left at the
+      # default the comparison fails for any subclass and YAMCS instantiates a
+      # second, detached CfdpService.
+      fileListingServiceClassName: com.example.myproject.FprimeCfdpService
+
+      sendFileCommand: ""      # auto-discovered by suffix when blank
+      downlinkChannelId: 0
+      downlinkKeep: KEEP
+      downlinkPriority: 0
+
+      # "." is the flight software's working directory, where uploads with a
+      # relative destination land. "/" browses the whole host filesystem, which
+      # on a laptop deployment means macOS root and takes ~1s per entry to list.
+      remoteRoot: "."
+
+      inStream: cfdp_in
+      outStream: cfdp_out
+
+      # YAMCS entity ID (matches F´'s FileInDefaultDestEntityId)
       localEntities:
-        - name: "YAMCS-Ground"
-          id: 68
-          bucket: "cfdpDown"
+        - name: yamcs
+          id: 100
+          bucket: fprimeFilesIn
+      # F´ entity ID (matches F´'s LocalEid)
       remoteEntities:
-        - name: "F-Prime-Target"
-          id: 1
+        - name: fprime
+          id: 42
+
+      # EntityId=U32, TransactionSeq=U32, MaxPduSize
+      # Frame size is 1024, TC frame overhead ~7 bytes, CCSDS header 6 bytes, ComPacket descriptor 2 bytes
+      # Available: 1024 - 7 - 6 - 2 = 1009 bytes
+      # Use 992 to match F´'s OutgoingFileChunkSize parameter
+      entityIdLength: 4
+      sequenceNrLength: 4
+      maxPduSize: 992
+
+      # ChannelConfig timing parameters (Parameters.fppi)
+      eofAckTimeout: 10000
+      eofAckLimit: 10
+      finAckTimeout: 10000
+      finAckLimit: 10
+      nakLimit: 10
+      inactivityTimeout: 120000
+      immediateNak: true
+
+      # Fault handlers
+      #
+      # "cancel", not "suspend": a suspended transfer parks in PAUSED and is
+      # never evicted from CfdpService's pending map. The duplicate-path check
+      # keeps scanning it, and a PAUSED transfer with a null remotePath NPEs
+      # that check -- after which every later upload fails with a 500 until
+      # YAMCS restarts. "cancel" reaches FAILED and gets evicted.
+      senderFaultHandlers:
+        AckLimitReached: cancel
+        NakLimitReached: cancel
+        InactivityDetected: cancel
+      receiverFaultHandlers:
+        AckLimitReached: cancel
+        NakLimitReached: cancel
+        InactivityDetected: cancel
 
 dataLinks:
   - name: UDP_TM_IN
@@ -105,30 +160,15 @@ mdb:
 
 # Configuration for streams created at server startup
 streamConfig:
+  # cfdp_in/cfdp_out are declared in cfdp_streams.sql, not here. Streams listed
+  # under tm:/tc: get the standard TM/TC column definition and any custom
+  # schema is ignored, which yields a "packet" column instead of the "pdu"
+  # column CfdpService requires.
+  sqlFile: "etc/cfdp_streams.sql"
   tm:
     - name: "tm_realtime"
       processor: "realtime"
     - name: "tm_dump"
-    - name: "cfdp_in"
-      schema:
-        columns:
-          - name: "gentime"
-            type: "TIMESTAMP"
-          - name: "seqNum"
-            type: "INT"
-          - name: "rectime"
-            type: "TIMESTAMP"
-          - name: "pdu"
-            type: "BINARY"
-    - name: "cfdp_out"
-      schema:
-        columns:
-          - name: "gentime"
-            type: "TIMESTAMP"
-          - name: "seqNum"
-            type: "INT"
-          - name: "pdu"
-            type: "BINARY"
   cmdHist: ["cmdhist_realtime", "cmdhist_dump"]
   event: ["events_realtime", "events_dump"]
   param: ["pp_realtime", "pp_dump", "sys_param", "proc_param"]
