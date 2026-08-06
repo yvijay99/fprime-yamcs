@@ -26,14 +26,15 @@ const SEVERITIES = [
   "DIAGNOSTIC",
 ];
 
-// Row colors matching fprime-gds fpstyle.css
+// Color-blind-safe row colors (Okabe-Ito derived; red FATAL is safe since no
+// green is used): warning family is a dark-to-light lightness ramp
 const SEVERITY_COLORS = {
-  FATAL: "rgba(251, 128, 114, 1)",
-  WARNING_HI: "rgba(242, 142, 44, 1)",
-  WARNING_LO: "rgba(237, 201, 73, 1)",
-  ACTIVITY_HI: "rgba(128, 177, 211, 1)",
-  ACTIVITY_LO: "rgba(186, 176, 171, 1)",
-  COMMAND: "rgba(127, 201, 127, 1)",
+  FATAL: "#E03C31",
+  WARNING_HI: "#E69F00",
+  WARNING_LO: "#F0E442",
+  ACTIVITY_HI: "#3D9FD9",
+  ACTIVITY_LO: "#CCCCCC",
+  COMMAND: "#C9B3E6",
   DIAGNOSTIC: "transparent",
 };
 
@@ -213,6 +214,7 @@ class FprimeEventsElement extends HTMLElement {
     this._subscription = null;
     this._service = null;
     this._follow = true;
+    this._newestFirst = false;
     this._timeStart = null;
     this._timeStop = null;
     this._loadingOlder = false;
@@ -324,6 +326,19 @@ class FprimeEventsElement extends HTMLElement {
     }
     toolbar.appendChild(severities);
 
+    const orderLabel = document.createElement("label");
+    orderLabel.className = "fp-follow";
+    const orderCheck = document.createElement("input");
+    orderCheck.type = "checkbox";
+    orderCheck.checked = this._newestFirst;
+    orderCheck.addEventListener("change", () => {
+      this._newestFirst = orderCheck.checked;
+      this.redraw();
+    });
+    orderLabel.appendChild(orderCheck);
+    orderLabel.appendChild(document.createTextNode("Newest at top"));
+    toolbar.appendChild(orderLabel);
+
     const followLabel = document.createElement("label");
     followLabel.className = "fp-follow";
     this._followCheck = document.createElement("input");
@@ -358,11 +373,16 @@ class FprimeEventsElement extends HTMLElement {
     // engages it. Nearing the top pages older events in from the archive.
     this._tableHolder.addEventListener("scroll", () => {
       const holder = this._tableHolder;
-      this._follow =
-        holder.scrollTop + holder.clientHeight >= holder.scrollHeight - 5;
+      const atNewestEdge = this._newestFirst
+        ? holder.scrollTop <= 5
+        : holder.scrollTop + holder.clientHeight >= holder.scrollHeight - 5;
+      this._follow = atNewestEdge;
       this._followCheck.checked = this._follow;
       this.renderWindow();
-      if (holder.scrollTop < ROW_HEIGHT * OVERSCAN) {
+      const nearOldestEdge = this._newestFirst
+        ? holder.scrollTop + holder.clientHeight >= holder.scrollHeight - ROW_HEIGHT * OVERSCAN
+        : holder.scrollTop < ROW_HEIGHT * OVERSCAN;
+      if (nearOldestEdge) {
         this.loadOlder();
       }
     });
@@ -475,7 +495,8 @@ class FprimeEventsElement extends HTMLElement {
     }
     this.redraw();
     // Keep the viewport anchored when older rows are inserted above it
-    if (prepended && holder && !this._follow) {
+    // (newest-at-top inserts older rows below, which needs no adjustment)
+    if (prepended && holder && !this._follow && !this._newestFirst) {
       const addedAbove = this._visible.length - oldVisibleCount;
       holder.scrollTop = oldScrollTop + addedAbove * ROW_HEIGHT;
       this.renderWindow();
@@ -522,7 +543,9 @@ class FprimeEventsElement extends HTMLElement {
 
   scrollIfFollowing() {
     if (this._follow && this._tableHolder) {
-      this._tableHolder.scrollTop = this._tableHolder.scrollHeight;
+      this._tableHolder.scrollTop = this._newestFirst
+        ? 0
+        : this._tableHolder.scrollHeight;
       this.renderWindow();
     }
   }
@@ -533,6 +556,9 @@ class FprimeEventsElement extends HTMLElement {
       return;
     }
     this._visible = this._events.filter((item) => this.matches(item));
+    if (this._newestFirst) {
+      this._visible.reverse();
+    }
     this._countLabel.textContent = `${this._visible.length} of ${this._events.length} events`;
     this._renderedRange = [-1, -1];
     this.renderWindow();
